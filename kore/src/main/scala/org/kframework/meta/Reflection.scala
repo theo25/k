@@ -105,7 +105,7 @@ object Reflection {
       throw new NoSuchMethodException("Could not find method: " + methodName)
 
     def valueFor(name: String, p: Symbol, i: Int): Option[MethodMirror] = {
-      val defarg = typeSignature member TermName(s"$name$$ default$$${i + 1}")
+      val defarg = typeSignature member TermName(s"$name$$default$$${i + 1}") // careful, autoformat introduces an incorrect space here
       if (defarg != NoSymbol) {
         Some(instanceMirror reflectMethod defarg.asMethod)
       } else
