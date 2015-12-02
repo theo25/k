@@ -7,6 +7,7 @@ import com.google.inject.Inject;
 import org.apache.commons.collections15.ListUtils;
 import org.kframework.Collections;
 import org.kframework.attributes.Source;
+import org.kframework.backend.Backends;
 import org.kframework.builtin.BooleanUtils;
 import org.kframework.builtin.Sorts;
 import org.kframework.compile.ConfigurationInfoFromModule;
@@ -22,18 +23,7 @@ import org.kframework.definition.Sentence;
 import org.kframework.kore.K;
 import org.kframework.kore.KApply;
 import org.kframework.kore.Sort;
-import org.kframework.kore.compile.AddImplicitComputationCell;
-import org.kframework.kore.compile.ConcretizeCells;
-import org.kframework.kore.compile.GenerateSentencesFromConfigDecl;
-import org.kframework.kore.compile.GenerateSortPredicateSyntax;
-import org.kframework.kore.compile.ResolveAnonVar;
-import org.kframework.kore.compile.ResolveContexts;
-import org.kframework.kore.compile.ResolveFreshConstants;
-import org.kframework.kore.compile.ResolveHeatCoolAttribute;
-import org.kframework.kore.compile.ResolveIOStreams;
-import org.kframework.kore.compile.ResolveSemanticCasts;
-import org.kframework.kore.compile.ResolveStrict;
-import org.kframework.kore.compile.SortInfo;
+import org.kframework.kore.compile.*;
 import org.kframework.main.GlobalOptions;
 import org.kframework.parser.TreeNodesToKORE;
 import org.kframework.parser.concrete2kore.ParseCache;
@@ -50,7 +40,7 @@ import org.kframework.utils.errorsystem.ParseFailedException;
 import org.kframework.utils.file.FileUtil;
 import org.kframework.utils.file.JarInfo;
 import scala.Tuple2;
-import scala.collection.immutable.Set;
+import scala.collection.Set;
 import scala.util.Either;
 
 import java.io.File;
@@ -80,15 +70,16 @@ import static scala.compat.java8.JFunction.*;
 public class Kompile {
 
     public static final File BUILTIN_DIRECTORY = JarInfo.getKIncludeDir().resolve("builtin").toFile();
-    private static final String REQUIRE_PRELUDE_K = "requires \"prelude.k\"\n";
+    public static final String REQUIRE_PRELUDE_K = "requires \"prelude.k\"\n";
     public static final Sort START_SYMBOL = Sort("RuleContent");
+
+    public final KompileOptions kompileOptions;
 
     private final FileUtil files;
     private final KExceptionManager kem;
     private final ParserUtils parser;
     private final boolean cacheParses;
     private final BinaryLoader loader;
-    private final KompileOptions kompileOptions;
     private final Stopwatch sw;
 
     private final AtomicInteger parsedBubbles = new AtomicInteger(0);
@@ -112,9 +103,9 @@ public class Kompile {
     }
 
     public Kompile(KompileOptions kompileOptions, GlobalOptions global, FileUtil files, KExceptionManager kem, Stopwatch sw, boolean cacheParses) {
+        this.kompileOptions = kompileOptions;
         this.files = files;
         this.kem = kem;
-        this.kompileOptions = kompileOptions;
         this.parser = new ParserUtils(files, kem, global);
         this.cacheParses = cacheParses;
         this.loader = new BinaryLoader(kem);
@@ -153,7 +144,7 @@ public class Kompile {
         DefinitionTransformer resolveHeatCoolAttribute = DefinitionTransformer.fromSentenceTransformer(new ResolveHeatCoolAttribute()::resolve, "resolving heat and cool attributes");
         DefinitionTransformer resolveAnonVars = DefinitionTransformer.fromSentenceTransformer(new ResolveAnonVar()::resolve, "resolving \"_\" vars");
         DefinitionTransformer resolveSemanticCasts =
-                DefinitionTransformer.fromSentenceTransformer(new ResolveSemanticCasts()::resolve, "resolving semantic casts");
+                DefinitionTransformer.fromSentenceTransformer(new ResolveSemanticCasts(kompileOptions.backend.equals(Backends.JAVA))::resolve, "resolving semantic casts");
         DefinitionTransformer generateSortPredicateSyntax = DefinitionTransformer.from(new GenerateSortPredicateSyntax()::gen, "adding sort predicate productions");
 
         return def -> func(this::resolveIOStreams)
@@ -164,8 +155,8 @@ public class Kompile {
                 .andThen(resolveSemanticCasts)
                 .andThen(generateSortPredicateSyntax)
                 .andThen(func(this::resolveFreshConstants))
-                .andThen(func(this::addImplicitComputationCellTransformer))
-                .andThen(func(this::concretizeTransformer))
+                .andThen(func(AddImplicitComputationCell::transformDefinition))
+                .andThen(func(ConcretizeCells::transformDefinition))
                 .andThen(func(this::addSemanticsModule))
                 .andThen(func(this::addProgramModule))
                 .apply(def);
@@ -207,37 +198,18 @@ public class Kompile {
         return Definition(d.mainModule(), programsModule, immutable(allModules));
     }
 
-    private Definition addImplicitComputationCellTransformer(Definition input) {
-        ConfigurationInfoFromModule configInfo = new ConfigurationInfoFromModule(input.mainModule());
-        LabelInfo labelInfo = new LabelInfoFromModule(input.mainModule());
-        SortInfo sortInfo = SortInfo.fromModule(input.mainModule());
-        return DefinitionTransformer.fromSentenceTransformer(
-                new AddImplicitComputationCell(configInfo, labelInfo),
-                "concretizing configuration").apply(input);
-    }
-
-    private Definition concretizeTransformer(Definition input) {
-        ConfigurationInfoFromModule configInfo = new ConfigurationInfoFromModule(input.mainModule());
-        LabelInfo labelInfo = new LabelInfoFromModule(input.mainModule());
-        SortInfo sortInfo = SortInfo.fromModule(input.mainModule());
-        return DefinitionTransformer.fromSentenceTransformer(
-                new ConcretizeCells(configInfo, labelInfo, sortInfo, kem)::concretize,
-                "concretizing configuration"
-        ).apply(input);
-    }
-
     private Sentence concretizeSentence(Sentence s, Definition input) {
         ConfigurationInfoFromModule configInfo = new ConfigurationInfoFromModule(input.mainModule());
         LabelInfo labelInfo = new LabelInfoFromModule(input.mainModule());
         SortInfo sortInfo = SortInfo.fromModule(input.mainModule());
-        return new ConcretizeCells(configInfo, labelInfo, sortInfo, kem).concretize(s);
+        return new ConcretizeCells(configInfo, labelInfo, sortInfo).concretize(s);
     }
 
     public Module parseModule(CompiledDefinition definition, File definitionFile, boolean dropQuote) {
         java.util.Set<Module> modules = parser.loadModules(
                 mutable(definition.getParsedDefinition().modules()),
                 "require " + StringUtil.enquoteCString(definitionFile.getPath()),
-                Source.apply(definitionFile.getPath()),
+                definitionFile,
                 definitionFile.getParentFile(),
                 Lists.newArrayList(BUILTIN_DIRECTORY),
                 dropQuote);
@@ -266,7 +238,7 @@ public class Kompile {
         gen = new RuleGrammarGenerator(definition.getParsedDefinition(), kompileOptions.strict());
         Module parsedMod = resolveBubbles(modWithConfig);
 
-        if(cacheParses) {
+        if (cacheParses) {
             loader.saveOrDie(files.resolveKompiled("cache.bin"), caches);
         }
         if (!errors.isEmpty()) {
@@ -283,8 +255,8 @@ public class Kompile {
         }
         Definition definition = parser.loadDefinition(
                 mainModuleName,
-                mainProgramsModule, prelude + "require " + StringUtil.enquoteCString(definitionFile.getPath()),
-                Source.apply(definitionFile.getPath()),
+                mainProgramsModule, prelude + FileUtil.load(definitionFile),
+                definitionFile,
                 definitionFile.getParentFile(),
                 ListUtils.union(kompileOptions.includes.stream()
                                 .map(files::resolveWorkingDirectory).collect(Collectors.toList()),
@@ -329,7 +301,7 @@ public class Kompile {
         gen = new RuleGrammarGenerator(defWithConfig, kompileOptions.strict());
         Definition parsedDef = DefinitionTransformer.from(this::resolveBubbles, "parsing rules").apply(defWithConfig);
 
-        if(cacheParses) {
+        if (cacheParses) {
             loader.saveOrDie(files.resolveKompiled("cache.bin"), caches);
         }
         if (!errors.isEmpty()) {
@@ -380,7 +352,7 @@ public class Kompile {
         if (def.getModule("MAP").isDefined()) {
             mapModule = def.getModule("MAP").get();
         } else {
-            throw KEMException.compilerError("Module Map must be visible at the configuration declaration, in module "+module.name());
+            throw KEMException.compilerError("Module Map must be visible at the configuration declaration, in module " + module.name());
         }
         return Module(module.name(), (Set<Module>) module.imports().$bar(Set(mapModule)), (Set<Sentence>) module.localSentences().$bar(configDeclProductions), module.att());
     }
@@ -432,7 +404,7 @@ public class Kompile {
 
     public Rule compileRule(CompiledDefinition compiledDef, Rule parsedRule) {
         return (Rule) func(new ResolveAnonVar()::resolve)
-                .andThen(func(new ResolveSemanticCasts()::resolve))
+                .andThen(func(new ResolveSemanticCasts(kompileOptions.backend.equals(Backends.JAVA))::resolve))
                 .andThen(func(s -> concretizeSentence(s, compiledDef.kompiledDefinition)))
                 .apply(parsedRule);
     }
@@ -504,7 +476,7 @@ public class Kompile {
             parsedBubbles.getAndIncrement();
             kem.addAllKException(result._2().stream().map(e -> e.getKException()).collect(Collectors.toList()));
             if (result._1().isRight()) {
-                KApply k = (KApply)TreeNodesToKORE.down(result._1().right().get());
+                KApply k = (KApply) TreeNodesToKORE.down(result._1().right().get());
                 k = KApply(k.klabel(), k.klist(), k.att().addAll(b.att().remove("contentStartLine").remove("contentStartColumn").remove("Source").remove("Location")));
                 cache.put(b.contents(), new ParsedSentence(k, new HashSet<>(result._2())));
                 return Stream.of(k);

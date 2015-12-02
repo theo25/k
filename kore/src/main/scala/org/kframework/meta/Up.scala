@@ -6,8 +6,9 @@ import org.kframework.definition.Associativity
 import org.kframework.kore._
 import collection.JavaConverters._
 import org.kframework.kore
+import collection._
 
-class Up[K <: kore.K](cons: Constructors[K] with ScalaSugar[K], imports: Set[String]) extends (Any => K) {
+class Up[K <: kore.K](cons: Constructors[K] with ScalaSugared[K], imports: Set[String]) extends (Any => K) {
 
   import cons._
 
