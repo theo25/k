@@ -17,9 +17,9 @@ object ModuleTransformer {
       def f(s: Sentence) = sentenceTransformer(s)
     }
 
-  def fromSentenceTransformer(f: (Module, Sentence) => Sentence, passName: String): HybridMemoizingModuleTransformer =
-    new HybridMemoizingModuleTransformer {
-      override def processHybridModule(m: Module): Module = {
+  def fromSentenceTransformer(f: (Module, Sentence) => Sentence, passName: String): BasicModuleTransformer =
+    new BasicModuleTransformer {
+      override def process(m: Module, alreadyProcessedModules: Set[Module]): Module = {
         val newSentences = m.localSentences map {
           s =>
             try {
@@ -46,7 +46,7 @@ object ModuleTransformer {
       case s => s
     }, name)
 
-  def fromKTransformerWithModuleInfo(ff: Module => K => K, name: String): HybridMemoizingModuleTransformer =
+  def fromKTransformerWithModuleInfo(ff: Module => K => K, name: String): BasicModuleTransformer =
     fromSentenceTransformer((module, sentence) => {
       val f: K => K = ff(module)
       sentence match {
@@ -56,7 +56,7 @@ object ModuleTransformer {
       }
     }, name)
 
-  def fromKTransformer(f: K => K, name: String): HybridMemoizingModuleTransformer =
+  def fromKTransformer(f: K => K, name: String): BasicModuleTransformer =
     fromKTransformerWithModuleInfo((m: Module) => f, name)
 
   def fromHybrid(f: Module => Module, name: String): HybridMemoizingModuleTransformer = {
@@ -185,7 +185,7 @@ object DefinitionTransformer {
 
   def fromHybrid(f: Module => Module, name: String): DefinitionTransformer = DefinitionTransformer(ModuleTransformer.fromHybrid(f, name))
 
-  def apply(f: HybridMemoizingModuleTransformer): DefinitionTransformer = new DefinitionTransformer(f)
+  def apply(f: MemoizingModuleTransformer): DefinitionTransformer = new DefinitionTransformer(f)
 
   def fromWithInputDefinitionTransformerClass(c: Class[_]): (Definition => Definition) = (d: Definition) => c.getConstructor(classOf[Definition]).newInstance(d).asInstanceOf[WithInputDefinitionModuleTransformer].outputDefinition
 
